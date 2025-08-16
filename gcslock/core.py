@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from google.auth import default
 from google.auth.credentials import Credentials
 
-from ._apis.accessor import AuthedRestAccessor
+from ._apis.accessor import Accessor, RestAccessor
 from ._apis.model import (
     AcquireLockRequest,
     BucketExistsRequest,
@@ -58,6 +58,9 @@ class LockState:
 
 
 class GcsLock:
+
+    __slots__ = ("_bucket", "_locked_owner", "_accessor", "_manage_lock_state_table")
+
     def __init__(
         self,
         bucket_name: str,
@@ -72,7 +75,7 @@ class GcsLock:
 
         self._bucket = bucket_name
         self._locked_owner = lock_owner
-        self._accessor = AuthedRestAccessor(credentials)
+        self._accessor: Accessor = RestAccessor(credentials)
         self._manage_lock_state_table: TTLDict[str, LockResponse] = TTLDict()
 
     def acquire(self, lock_id: str, expires_seconds: int = 30):
@@ -89,7 +92,7 @@ class GcsLock:
         )
 
         lock_state_id = lock_state.lock_state_id
-        self._manage_lock_state_table.set(lock_state_id, response, response.expires_sec)
+        self._manage_lock_state_table[lock_state_id] = response, response.expires_sec
 
         return lock_state
 

@@ -50,7 +50,7 @@ def _response_fields() -> set[str]:
     return {"metadata", "generation", "updated", "metageneration", "bucket", "name"}
 
 
-class AuthedRestAccessor(Accessor):
+class RestAccessor(Accessor):
 
     _base_endpoint = "https://storage.googleapis.com"
     _standard_query_parameters = {
@@ -80,8 +80,9 @@ class AuthedRestAccessor(Accessor):
         elif response.status_code == 200:
             return True
         else:
-            response.raise_for_status()
-            raise RuntimeError("Unexpected response from GCS")
+            raise UnexpectedGCSResponseError(
+                status_code=response.status_code, response=response.text
+            )
 
     def get_lock_info(self, request: GetLockInfoRequest) -> LockResponse | None:
         endpoint = f"{self._base_endpoint}/storage/v1/b/{request.bucket}/o/{request.object_key}"
@@ -101,8 +102,9 @@ class AuthedRestAccessor(Accessor):
         elif response.status_code == 200:
             return _response_to_lock_info(response)
         else:
-            response.raise_for_status()
-            raise RuntimeError("Unexpected response from GCS")
+            raise UnexpectedGCSResponseError(
+                status_code=response.status_code, response=response.text
+            )
 
     def acquire_lock(self, request: AcquireLockRequest) -> LockResponse:
         endpoint = f"{self._base_endpoint}/upload/storage/v1/b/{request.bucket}/o"
@@ -121,7 +123,7 @@ class AuthedRestAccessor(Accessor):
         if request.force:
             del query_params["ifGenerationMatch"]
 
-        boundary_string = "separator_string"
+        boundary_string = "separate_string"
         multipart_data = (
             f"--{boundary_string}\r\n"
             "Content-Type: application/json\r\n\r\n"
@@ -189,7 +191,9 @@ class AuthedRestAccessor(Accessor):
         if response.status_code == 204:
             return
         elif response.status_code in (404, 412):
-            self._logger.warn(f"This lock has already been released by another user.")
+            self._logger.warning(
+                f"This lock has already been released by another user."
+            )
         else:
             raise UnexpectedGCSResponseError(
                 status_code=response.status_code, response=response.text

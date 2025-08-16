@@ -18,8 +18,8 @@ class GetLockInfoRequest:
 class AcquireLockRequest:
     bucket: str
     object_key: str
-    expires_sec: int = 20
     owner: str | None = None
+    expires_sec: int = 20
     force: bool = False
 
     def to_metadata(self) -> dict:
@@ -35,8 +35,8 @@ class UpdateLockRequest:
     bucket: str
     object_key: str
     metageneration: int
+    owner: str
     expires_sec: int = 20
-    owner: str | None = None
     force: bool = False
 
     def to_metadata(self) -> dict:

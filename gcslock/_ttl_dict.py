@@ -1,4 +1,5 @@
 import time
+from collections.abc import MutableMapping
 from threading import RLock
 from typing import Generic, TypeVar
 
@@ -6,34 +7,42 @@ K = TypeVar("K")
 V = TypeVar("V")
 
 
-class TTLDict(Generic[K, V]):
+class TTLDict(Generic[K, V], MutableMapping[K, V]):
     def __init__(self, default_ttl: int = 60):
-        self._ttl_dict: dict[K, tuple[V, float]] = dict()
+        self._ttl_dict: dict[K, tuple[V, float]] = {}
         self._default_ttl = default_ttl
         self._lock = RLock()
 
-    def __getitem__(self, key: K):
-        return self.get(key)
+    def __getitem__(self, key: K) -> V:
+        with self._lock:
+            try:
+                value, expires_at = self._ttl_dict[key]
+            except KeyError:
+                raise KeyError(f"{key} not found")
+            if time.monotonic() < expires_at:
+                return value
+            self._ttl_dict.pop(key, None)
+            raise KeyError(f"{key} is expired")
 
-    def __setitem__(self, key: K, value: V):
-        self.set(key, value)
+    def __setitem__(self, key: K, value: tuple[V, int] | V) -> None:
+        if isinstance(value, tuple):
+            value, ttl = value
+        else:
+            value, ttl = value, None
 
-    def __delitem__(self, key: K):
+        if ttl is None:
+            ttl = self._default_ttl
+
+        with self._lock:
+            expires_at = time.monotonic() + ttl
+            self._ttl_dict[key] = (value, expires_at)
+
+    def __delitem__(self, key: K) -> None:
         with self._lock:
             self._ttl_dict.pop(key, None)
 
-    def get(self, key: K):
-        with self._lock:
-            value, expires_at = self._ttl_dict.get(key, (None, 0))
-            if time.monotonic() < expires_at:
-                return value
-            else:
-                self._ttl_dict.pop(key, None)
-                raise KeyError(f"{key} is expired (or not found)")
+    def __iter__(self):
+        return iter(self._ttl_dict)
 
-    def set(self, key: K, value: V, ttl: int = None):
-        with self._lock:
-            if ttl is None:
-                ttl = self._default_ttl
-            expires_at = time.monotonic() + ttl
-            self._ttl_dict[key] = (value, expires_at)
+    def __len__(self) -> int:
+        return len(self._ttl_dict)

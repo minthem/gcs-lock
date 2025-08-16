@@ -111,7 +111,15 @@ def _response_to_lock_info(response):
     expires_sec = int(metadata.get("expires_sec", "0"))
     if expires_sec <= 0:
         expires_sec = 0
-    updated = datetime.fromisoformat(resp_body.get("updated").replace("Z", "+00:00"))
+
+    updated_raw = resp_body.get("updated").replace("Z", "+00:00")
+    if "." in updated_raw:
+        ts_part, rest = updated_raw.split(".")
+        frac, tz = rest.split("+")
+        frac = frac.ljust(6, "0")
+        updated_raw = f"{ts_part}.{frac}+{tz}"
+
+    updated = datetime.fromisoformat(updated_raw)
 
     return LockResponse(
         bucket=resp_body.get("bucket"),
@@ -272,13 +280,18 @@ class RestAccessor(Accessor):
         query_params = {
             **self._standard_query_parameters,
             "ifMetagenerationMatch": request.metageneration,
+        }
+
+        request_data = {
             "metadata": request.to_metadata(),
         }
 
         if request.force:
             del query_params["ifMetagenerationMatch"]
 
-        response = self._authed_session.patch(endpoint, params=query_params)
+        response = self._authed_session.patch(
+            endpoint, params=query_params, json=request_data
+        )
 
         if response.status_code == 200:
             return _response_to_lock_info(response)
@@ -301,7 +314,7 @@ class RestAccessor(Accessor):
 
         response = self._authed_session.delete(endpoint, params=query_params)
 
-        if response.status_code == 204:
+        if response.status_code in (200, 204):
             return
         elif response.status_code in (404, 412):
             self._logger.warning(

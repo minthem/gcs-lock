@@ -1,5 +1,6 @@
 import abc
 import json
+import os
 
 from google.auth.credentials import Credentials
 from google.auth.transport.requests import AuthorizedSession
@@ -162,6 +163,10 @@ class RestAccessor(Accessor):
             logger = get_logger()
 
         self._logger = logger
+
+        if os.getenv("STORAGE_EMULATOR_HOST", None) is not None:
+            self._base_endpoint = os.getenv("STORAGE_EMULATOR_HOST", None)
+            self._logger.warning("Using GCS emulator host: %s", self._base_endpoint)
 
     def bucket_exists(self, request: BucketExistsRequest) -> bool:
         """

@@ -10,24 +10,101 @@ from .model import *
 
 
 class Accessor(metaclass=abc.ABCMeta):
+    """
+    Abstraction for interacting with the underlying storage system that holds locks.
+
+    Concrete implementations are responsible for talking to the storage backend
+    (e.g., Google Cloud Storage) and providing CRUD-like operations for lock objects.
+    """
 
     @abc.abstractmethod
-    def bucket_exists(self, request: BucketExistsRequest) -> bool: ...
+    def bucket_exists(self, request: BucketExistsRequest) -> bool:
+        """
+        Check whether the target bucket exists.
+
+        Args:
+            request: Request containing the bucket to check.
+
+        Returns:
+            bool: True if the bucket exists; False otherwise.
+        """
+        ...
 
     @abc.abstractmethod
-    def get_lock_info(self, request: GetLockInfoRequest) -> LockResponse | None: ...
+    def get_lock_info(self, request: GetLockInfoRequest) -> LockResponse | None:
+        """
+        Retrieve the current lock information for an object key.
+
+        Args:
+            request: Request specifying bucket and object key for the lock.
+
+        Returns:
+            LockResponse | None: The lock info if found; otherwise None.
+        """
+        ...
 
     @abc.abstractmethod
-    def acquire_lock(self, request: AcquireLockRequest) -> LockResponse: ...
+    def acquire_lock(self, request: AcquireLockRequest) -> LockResponse:
+        """
+        Create a new lock if none exists, or force-create when allowed.
+
+        Args:
+            request: Request describing the lock to acquire (bucket, key, owner, TTL).
+
+        Returns:
+            LockResponse: The resulting lock state as stored by the backend.
+
+        Raises:
+            LockConflictError: If the lock already exists and cannot be created.
+            GCSApiError: On backend API failures.
+        """
+        ...
 
     @abc.abstractmethod
-    def update_lock(self, request: UpdateLockRequest) -> LockResponse: ...
+    def update_lock(self, request: UpdateLockRequest) -> LockResponse:
+        """
+        Refresh/update an existing lock, typically extending its expiration.
+
+        Args:
+            request: Request with target lock identity and expected metageneration.
+
+        Returns:
+            LockResponse: The updated lock state.
+
+        Raises:
+            LockConflictError: If the lock has changed and cannot be updated safely.
+            GCSApiError: On backend API failures.
+        """
+        ...
 
     @abc.abstractmethod
-    def release_lock(self, lock_info: ReleaseLockRequest): ...
+    def release_lock(self, lock_info: ReleaseLockRequest):
+        """
+        Release an existing lock using strong conditions (generation/metageneration).
+
+        Args:
+            lock_info: Request containing bucket, key, generation, and metageneration.
+
+        Raises:
+            LockConflictError: If the lock has changed and cannot be released safely.
+            GCSApiError: On backend API failures.
+        """
+        ...
 
 
 def _response_to_lock_info(response):
+    """
+    Translate a backend HTTP response into a LockResponse domain object.
+
+    Expects a JSON body compatible with GCS object resource schema and
+    extracts the lock metadata and timestamps.
+
+    Args:
+        response: The HTTP response object exposing .json() and fields used below.
+
+    Returns:
+        LockResponse: The parsed lock representation.
+    """
     resp_body = response.json()
     metadata = resp_body.get("metadata", {})
     expires_sec = int(metadata.get("expires_sec", "0"))
@@ -47,10 +124,22 @@ def _response_to_lock_info(response):
 
 
 def _response_fields() -> set[str]:
+    """
+    The set of fields to request from the backend to minimize payload size.
+
+    Returns:
+        set[str]: Field names required to reconstruct a LockResponse.
+    """
     return {"metadata", "generation", "updated", "metageneration", "bucket", "name"}
 
 
 class RestAccessor(Accessor):
+    """
+    Accessor implementation using Google Cloud Storage JSON/JSON+Upload APIs.
+
+    Uses an AuthorizedSession to call GCS endpoints and maps responses to
+    the library's domain objects and errors.
+    """
 
     _base_endpoint = "https://storage.googleapis.com"
     _standard_query_parameters = {
@@ -60,6 +149,13 @@ class RestAccessor(Accessor):
     }
 
     def __init__(self, credentials: Credentials, logger=None):
+        """
+        Create a RestAccessor bound to given Google auth credentials.
+
+        Args:
+            credentials: Google auth credentials used to authorize requests.
+            logger: Optional logger; defaults to the library logger.
+        """
         self._authed_session = AuthorizedSession(credentials=credentials)
 
         if logger is None:
@@ -68,6 +164,18 @@ class RestAccessor(Accessor):
         self._logger = logger
 
     def bucket_exists(self, request: BucketExistsRequest) -> bool:
+        """
+        Check bucket existence via GCS buckets.get.
+
+        Args:
+            request: Bucket existence request.
+
+        Returns:
+            bool: True if the bucket exists; False if 404 is returned.
+
+        Raises:
+            UnexpectedGCSResponseError: For unexpected status codes.
+        """
         endpoint = f"{self._base_endpoint}/storage/v1/b/{request.bucket}"
         response = self._authed_session.get(endpoint, params={"fields": "name"})
 

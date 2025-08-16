@@ -39,6 +39,11 @@ addopts = [
     "--strict-config",
     "--verbose",
 ]
+markers = [
+    "integration: marks integration tests",
+    "unittest: marks unit tests",
+]
+
 
 [tool.isort]
 profile = 'black'

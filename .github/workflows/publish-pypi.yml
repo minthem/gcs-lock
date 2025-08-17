@@ -1,0 +1,80 @@
+name: Publish Python 🐍 distribution 📦 to PyPI
+
+on:
+  push:
+    tags:
+      - "*"
+
+env:
+  VERSION: ${{ github.ref_name != '' && github.ref_name || '0.0.0' }}
+
+jobs:
+  check-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install packaging
+        run: pip install packaging
+      - name: Validate version string
+        run: |
+          version="${{ github.ref_name }}"
+          python3 -c "
+          import sys
+          from packaging.version import Version, InvalidVersion
+          try:
+              version = sys.argv[1]
+              Version(version)
+              print('✅ Valid PEP 440 version:', version)
+          except InvalidVersion:
+              print('❌ Invalid PEP 440 version:', version)
+              sys.exit(1)
+          " $version
+
+  build:
+    name: Build distribution 📦
+    runs-on: ubuntu-latest
+    needs:
+      - check-tag
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Replace version
+        run: |
+          uv version ${{ env.VERSION }}
+          sed -i "s/^VERSION = ['\"]0.0.0['\"]\$/VERSION = \"${{ env.VERSION }}\"/" gcslock/__version__.py
+
+      - name: Build a binary wheel and a source tarball
+        run: uv build
+
+      - name: Store the distribution packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish-to-pypi:
+    name: >-
+      Publish Python 🐍 distribution 📦 to PyPI
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/gcslock/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all the dists
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Publish distribution 📦 to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

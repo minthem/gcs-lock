@@ -304,6 +304,7 @@ class TestGcsLock:
             lock_obj.release(invalid_state)
 
 
+@pytest.mark.unittest
 class TestLockState:
     def _make(self, mock_gcs_lock=None, expires_at=None):
         if mock_gcs_lock is None:

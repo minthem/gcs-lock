@@ -5,6 +5,7 @@ import pytest
 from gcslock._logger import get_logger
 
 
+@pytest.mark.unittest
 class TestGetLogger:
     @pytest.fixture(autouse=True)
     def reset_gcslock_logger(self):

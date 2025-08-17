@@ -44,8 +44,6 @@ class TestAcquireLockRequest:
             "lock_owner": "owner",
         }
 
-    # --- Added tests below ---
-
     def test_to_metadata_owner_none(self):
         fake_uuid = "1234567890abcdef"
         with patch("gcslock._apis.model.uuid.uuid4") as mock_uuid4:
@@ -107,8 +105,6 @@ class TestUpdateLockRequest:
             "expires_sec": "10",
             "lock_owner": "owner",
         }
-
-    # --- Added tests below ---
 
     def test_frozen_dataclass_immutable(self):
         req = UpdateLockRequest(
@@ -210,8 +206,6 @@ class TestLockResponse:
             "lock_owner": "owner",
         }
 
-    # --- Added tests below ---
-
     def test_is_expired_direct_true_false(self, test_datetime):
         lr = LockResponse(
             bucket="b",
@@ -255,9 +249,6 @@ class TestLockResponse:
         )
         with pytest.raises(FrozenInstanceError):
             lr.lock_owner = "bob"  # type: ignore[attr-defined]
-
-
-# New classes for untested dataclasses
 
 
 @pytest.mark.unittest

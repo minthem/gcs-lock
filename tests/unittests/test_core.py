@@ -16,6 +16,7 @@ from gcslock.core import (
 from gcslock.exception import (
     BucketNotFoundError,
     GCSApiError,
+    GcsClientError,
     LockConflictError,
     LockNotHeldError,
     UnexpectedGCSResponseError,
@@ -47,28 +48,28 @@ class TestGcsLock:
         return SimpleNamespace(accessor=accessor)
 
     @pytest.fixture(scope="class")
-    def error_response(self):
-        return UnexpectedGCSResponseError(
+    def error_response_401(self):
+        return GcsClientError(
             status_code=401,
-            response=json.dumps(
-                {
-                    "error": {
-                        "errors": [
-                            {
-                                "domain": "global",
-                                "reason": "required",
-                                "message": "Login Required",
-                                "locationType": "header",
-                                "location": "Authorization",
-                            }
-                        ],
-                    },
-                    "code": 401,
-                    "message": "Login Required",
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+            message="Login Required",
+            details={
+                "errors": [
+                    {
+                        "domain": "global",
+                        "reason": "required",
+                        "message": "Login Required",
+                        "locationType": "header",
+                        "location": "Authorization",
+                    }
+                ],
+            },
+        )
+
+    @pytest.fixture(scope="class")
+    def error_response_500(self):
+        return UnexpectedGCSResponseError(
+            status_code=500,
+            response="Internal Server Error",
         )
 
     @staticmethod
@@ -209,21 +210,29 @@ class TestGcsLock:
         with pytest.raises(BucketNotFoundError):
             lock_obj.acquire(lock_id=self.LOCK_ID)
 
-    def test_bucket_exists_raise_error(self, env, error_response):
-        env.accessor.bucket_exists.side_effect = error_response
+    def test_bucket_exists_raise_error(self, env, error_response_401):
+        env.accessor.bucket_exists.side_effect = error_response_401
         lock_obj = GcsLock(bucket_name=self.BUCKET)
-        with pytest.raises(UnexpectedGCSResponseError):
+        with pytest.raises(GcsClientError):
             lock_obj.acquire(lock_id=self.LOCK_ID)
 
-    def test_acquire_lock_new_lock_raise_error(self, env, error_response):
+    def test_acquire_lock_new_lock_raise_client_error(self, env, error_response_401):
         env.accessor.get_lock_info.return_value = None
-        env.accessor.acquire_lock.side_effect = error_response
+        env.accessor.acquire_lock.side_effect = error_response_401
+
+        lock_obj = GcsLock(bucket_name=self.BUCKET)
+        with pytest.raises(GcsClientError):
+            lock_obj.acquire(lock_id=self.LOCK_ID, expires_seconds=10)
+
+    def test_acquire_lock_new_lock_raise_server_error(self, env, error_response_500):
+        env.accessor.get_lock_info.return_value = None
+        env.accessor.acquire_lock.side_effect = error_response_500
 
         lock_obj = GcsLock(bucket_name=self.BUCKET)
         with pytest.raises(UnexpectedGCSResponseError):
             lock_obj.acquire(lock_id=self.LOCK_ID, expires_seconds=10)
 
-    def test_acquire_lock_update_raise_error(self, env, error_response):
+    def test_acquire_lock_update_raise_client_error(self, env, error_response_401):
         bucket = self.BUCKET
         lock_id = self.LOCK_ID
         expires_sec = 20
@@ -238,7 +247,28 @@ class TestGcsLock:
             metageneration=1,
         )
         env.accessor.get_lock_info.return_value = old_lr
-        env.accessor.update_lock.side_effect = error_response
+        env.accessor.update_lock.side_effect = error_response_401
+
+        lock_obj = GcsLock(bucket_name=bucket)
+        with pytest.raises(GcsClientError):
+            lock_obj.acquire(lock_id=lock_id, expires_seconds=expires_sec)
+
+    def test_acquire_lock_update_raise_error(self, env, error_response_500):
+        bucket = self.BUCKET
+        lock_id = self.LOCK_ID
+        expires_sec = 20
+
+        old_lr = self._lr(
+            bucket=bucket,
+            key=lock_id,
+            owner=str(self.FIXED_UUID),
+            locked_at=datetime.now(timezone.utc) - timedelta(seconds=expires_sec + 1),
+            expires_sec=expires_sec,
+            generation=1,
+            metageneration=1,
+        )
+        env.accessor.get_lock_info.return_value = old_lr
+        env.accessor.update_lock.side_effect = error_response_500
 
         lock_obj = GcsLock(bucket_name=bucket)
         with pytest.raises(UnexpectedGCSResponseError):

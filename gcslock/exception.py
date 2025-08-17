@@ -34,6 +34,14 @@ class LockConflictError(GCSApiError):
         self.lock_id = lock_id
 
 
+class GcsClientError(GCSApiError):
+    """Raised when an error occurs while interacting with the GCS client."""
+
+    def __init__(self, status_code: int, message: str, details: dict[str, Any]):
+        super().__init__(status_code, message)
+        self.details = details
+
+
 class UnexpectedGCSResponseError(GCSApiError):
     """Raised for non-explicit GCS failures not mapped to a known domain error."""
 

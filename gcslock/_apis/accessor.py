@@ -1,6 +1,7 @@
 import abc
 import json
 import os
+from json import JSONDecodeError
 
 from google.auth import default
 from google.auth.credentials import AnonymousCredentials, Credentials
@@ -143,6 +144,30 @@ def _response_fields() -> set[str]:
     return {"metadata", "generation", "updated", "metageneration", "bucket", "name"}
 
 
+def _is_client_error(response) -> bool:
+    return 400 <= response.status_code < 500
+
+
+def _extract_error_info(response) -> dict:
+    try:
+        return response.json().get("error", {})
+    except JSONDecodeError:
+        return {}
+
+
+def _handle_error(response) -> GCSApiError:
+    error_info = _extract_error_info(response)
+    if _is_client_error(response) and "message" in error_info:
+        return GcsClientError(
+            status_code=response.status_code,
+            message=error_info["message"],
+            details=error_info,
+        )
+    return UnexpectedGCSResponseError(
+        status_code=response.status_code, response=response.text
+    )
+
+
 class RestAccessor(Accessor):
     """
     Accessor implementation using Google Cloud Storage JSON/JSON+Upload APIs.
@@ -209,9 +234,7 @@ class RestAccessor(Accessor):
         elif response.status_code == 200:
             return True
         else:
-            raise UnexpectedGCSResponseError(
-                status_code=response.status_code, response=response.text
-            )
+            raise _handle_error(response)
 
     def get_lock_info(self, request: GetLockInfoRequest) -> LockResponse | None:
         endpoint = f"{self._base_endpoint}/storage/v1/b/{request.bucket}/o/{request.object_key}"
@@ -231,9 +254,7 @@ class RestAccessor(Accessor):
         elif response.status_code == 200:
             return _response_to_lock_info(response)
         else:
-            raise UnexpectedGCSResponseError(
-                status_code=response.status_code, response=response.text
-            )
+            raise _handle_error(response)
 
     def acquire_lock(self, request: AcquireLockRequest) -> LockResponse:
         endpoint = f"{self._base_endpoint}/upload/storage/v1/b/{request.bucket}/o"
@@ -272,6 +293,10 @@ class RestAccessor(Accessor):
             endpoint, data=multipart_data, params=query_params, headers=headers
         )
 
+        self._logger.debug(
+            f"GCS acquire lock endpoint: {endpoint}, params {response.request.body}, response {response.text}"
+        )
+
         if response.status_code == 200:
             return _response_to_lock_info(response)
         elif response.status_code == 412:
@@ -279,9 +304,7 @@ class RestAccessor(Accessor):
                 bucket_name=request.bucket, lock_id=request.object_key
             )
         else:
-            raise UnexpectedGCSResponseError(
-                status_code=response.status_code, response=response.text
-            )
+            raise _handle_error(response)
 
     def update_lock(self, request: UpdateLockRequest) -> LockResponse:
         endpoint = f"{self._base_endpoint}/storage/v1/b/{request.bucket}/o/{request.object_key}"
@@ -301,6 +324,10 @@ class RestAccessor(Accessor):
             endpoint, params=query_params, json=request_data
         )
 
+        self._logger.debug(
+            f"GCS update lock endpoint: {endpoint}, params {response.request.body}, response {response.text}"
+        )
+
         if response.status_code == 200:
             return _response_to_lock_info(response)
         elif response.status_code == 412:
@@ -308,9 +335,7 @@ class RestAccessor(Accessor):
                 bucket_name=request.bucket, lock_id=request.object_key
             )
         else:
-            raise UnexpectedGCSResponseError(
-                status_code=response.status_code, response=response.text
-            )
+            raise _handle_error(response)
 
     def release_lock(self, request: ReleaseLockRequest):
         endpoint = f"{self._base_endpoint}/storage/v1/b/{request.bucket}/o/{request.object_key}"
@@ -322,6 +347,10 @@ class RestAccessor(Accessor):
 
         response = self._authed_session.delete(endpoint, params=query_params)
 
+        self._logger.debug(
+            f"GCS release lock endpoint: {endpoint}, params {response.request.body}, response {response.text}"
+        )
+
         if response.status_code in (200, 204):
             return
         elif response.status_code in (404, 412):
@@ -329,6 +358,4 @@ class RestAccessor(Accessor):
                 f"This lock has already been released by another user."
             )
         else:
-            raise UnexpectedGCSResponseError(
-                status_code=response.status_code, response=response.text
-            )
+            raise _handle_error(response)

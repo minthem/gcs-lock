@@ -1,74 +1,49 @@
 import json
 import types
-from datetime import datetime, timezone
 
 import pytest
 
 from gcslock._apis import accessor as target
-from gcslock._apis.model import (
-    AcquireLockRequest,
-    BucketExistsRequest,
-    GetLockInfoRequest,
-    LockResponse,
-    ReleaseLockRequest,
-    UpdateLockRequest,
+from gcslock.exception import (
+    GcsClientError,
+    LockConflictError,
+    UnexpectedGCSResponseError,
 )
-from gcslock.exception import LockConflictError, UnexpectedGCSResponseError
 
 
 class DummyResponse:
-    def __init__(self, status_code=200, body=None):
+    def __init__(
+        self, status_code: int, body: dict | None = None, text: str | None = None
+    ):
         self.status_code = status_code
-        self._body = body or {}
-        self.text = json.dumps(self._body)
+        self._body = body if body is not None else {}
+        self.text = text if text is not None else json.dumps(self._body)
         self.request = types.SimpleNamespace(body=None)
 
     def json(self):
         return self._body
 
 
-@pytest.fixture
-def sample_lock_body():
+def sample_lock_body(
+    owner="alice",
+    expires_sec=30,
+    generation=1,
+    metageneration=1,
+    bucket="b",
+    name="locks/sample",
+    updated="2024-01-01T00:00:00Z",
+):
     return {
-        "bucket": "bkt",
-        "name": "obj",
-        "generation": 1,
-        "metageneration": 2,
-        "updated": "2025-01-01T00:00:00Z",
-        "metadata": {"expires_sec": "10", "lock_owner": "alice"},
+        "bucket": bucket,
+        "name": name,
+        "generation": generation,
+        "metageneration": metageneration,
+        "updated": updated,
+        "metadata": {
+            "lock_owner": owner,
+            "expires_sec": str(expires_sec),
+        },
     }
-
-
-@pytest.mark.unittest
-class TestResponseToLockInfo:
-    def test_parses_fields_normal(self, sample_lock_body):
-        resp = DummyResponse(body=sample_lock_body)
-        lr = target._response_to_lock_info(resp)
-        assert isinstance(lr, LockResponse)
-        assert lr.bucket == "bkt"
-        assert lr.lock_owner == "alice"
-        assert lr.expires_sec == 10
-
-    def test_expires_sec_non_positive(self, sample_lock_body):
-        body2 = dict(sample_lock_body)
-        body2["metadata"] = {"expires_sec": "-5", "lock_owner": "bob"}
-        lr = target._response_to_lock_info(DummyResponse(body=body2))
-        assert lr.expires_sec == 0
-
-
-@pytest.mark.unittest
-class TestResponseFields:
-    def test_contains_expected_keys(self):
-        fields = target._response_fields()
-        expected = {
-            "metadata",
-            "generation",
-            "updated",
-            "metageneration",
-            "bucket",
-            "name",
-        }
-        assert expected <= fields
 
 
 @pytest.fixture
@@ -101,148 +76,332 @@ def rest_accessor(monkeypatch):
 
 
 @pytest.mark.unittest
+class TestResponseToLockInfo:
+    def test_parses_fields_normal(self):
+        body = sample_lock_body()
+        res = DummyResponse(200, body)
+        lock = target._response_to_lock_info(res)
+        assert lock.lock_owner == "alice"
+        assert lock.expires_sec == 30
+        assert lock.generation == 1
+        assert lock.metageneration == 1
+        assert lock.object_key == "locks/sample"
+        assert lock.bucket == "b"
+        assert str(lock.locked_at.tzinfo) is not None
+
+    def test_expires_sec_non_positive(self):
+        body = sample_lock_body(expires_sec=0)
+        res = DummyResponse(200, body)
+        lock = target._response_to_lock_info(res)
+        assert lock.expires_sec == 0
+
+
+@pytest.mark.unittest
+class TestResponseFields:
+    def test_contains_expected_keys(self):
+        fields = set(target._response_fields())
+        for key in {
+            "metadata",
+            "generation",
+            "updated",
+            "metageneration",
+            "bucket",
+            "name",
+        }:
+            assert key in fields
+
+
+@pytest.mark.unittest
 class TestBucketExists:
     def test_bucket_exists_true(self, rest_accessor):
         rest_accessor._authed_session._calls.append(
-            DummyResponse(status_code=200, body={"name": "bkt"})
+            DummyResponse(200, {"name": "bucket"})
         )
-        assert rest_accessor.bucket_exists(BucketExistsRequest(bucket="b"))
+        assert (
+            rest_accessor.bucket_exists(target.BucketExistsRequest(bucket="bucket"))
+            is True
+        )
 
     def test_bucket_exists_false(self, rest_accessor):
-        rest_accessor._authed_session._calls.append(DummyResponse(status_code=404))
-        assert rest_accessor.bucket_exists(BucketExistsRequest(bucket="b")) is False
+        rest_accessor._authed_session._calls.append(
+            DummyResponse(404, {"error": {"code": 404}})
+        )
+        assert (
+            rest_accessor.bucket_exists(target.BucketExistsRequest(bucket="bucket"))
+            is False
+        )
 
-    def test_bucket_exists_unexpected_status(self, rest_accessor):
-        rest_accessor._authed_session._calls.append(DummyResponse(status_code=500))
-        with pytest.raises(UnexpectedGCSResponseError):
-            rest_accessor.bucket_exists(BucketExistsRequest(bucket="b"))
+    def test_bucket_exists_4xx_raises_client_error(self, rest_accessor):
+        body = {
+            "error": {
+                "code": 400,
+                "message": "Bad Request",
+                "status": "INVALID_ARGUMENT",
+            }
+        }
+        rest_accessor._authed_session._calls.append(DummyResponse(400, body))
+        with pytest.raises(GcsClientError) as e:
+            rest_accessor.bucket_exists(target.BucketExistsRequest(bucket="bucket"))
+        assert e.value.status_code == 400
+
+    def test_bucket_exists_5xx_raises_unexpected_error(self, rest_accessor):
+        rest_accessor._authed_session._calls.append(
+            DummyResponse(503, None, text="Service unavailable")
+        )
+        with pytest.raises(UnexpectedGCSResponseError) as e:
+            rest_accessor.bucket_exists(target.BucketExistsRequest(bucket="bucket"))
+        assert e.value.status_code == 503
 
 
 @pytest.mark.unittest
 class TestGetLockInfo:
     def test_get_lock_info_none(self, rest_accessor):
-        rest_accessor._authed_session._calls.append(DummyResponse(status_code=404))
-        assert (
-            rest_accessor.get_lock_info(GetLockInfoRequest(bucket="b", object_key="o"))
-            is None
-        )
-
-    def test_get_lock_info_success(self, rest_accessor, sample_lock_body):
         rest_accessor._authed_session._calls.append(
-            DummyResponse(status_code=200, body=sample_lock_body)
+            DummyResponse(404, {"error": {"code": 404}})
         )
-        lr = rest_accessor.get_lock_info(GetLockInfoRequest(bucket="b", object_key="o"))
-        assert isinstance(lr, LockResponse)
+        got = rest_accessor.get_lock_info(
+            target.GetLockInfoRequest(bucket="b", object_key="k")
+        )
+        assert got is None
 
-    def test_get_lock_info_unexpected(self, rest_accessor):
-        rest_accessor._authed_session._calls.append(DummyResponse(status_code=418))
-        with pytest.raises(UnexpectedGCSResponseError):
-            rest_accessor.get_lock_info(GetLockInfoRequest(bucket="b", object_key="o"))
+    def test_get_lock_info_success(self, rest_accessor):
+        body = sample_lock_body(owner="alice", name="k")
+        rest_accessor._authed_session._calls.append(DummyResponse(200, body))
+        got = rest_accessor.get_lock_info(
+            target.GetLockInfoRequest(bucket="b", object_key="k")
+        )
+        assert got is not None
+        assert got.lock_owner == "alice"
+
+    def test_get_lock_info_4xx(self, rest_accessor):
+        body = {
+            "error": {
+                "code": 401,
+                "message": "Unauthorized",
+                "status": "UNAUTHENTICATED",
+            }
+        }
+        rest_accessor._authed_session._calls.append(DummyResponse(401, body))
+        with pytest.raises(GcsClientError) as e:
+            rest_accessor.get_lock_info(
+                target.GetLockInfoRequest(bucket="b", object_key="k")
+            )
+        assert e.value.status_code == 401
+
+    def test_get_lock_info_5xx(self, rest_accessor):
+        rest_accessor._authed_session._calls.append(
+            DummyResponse(500, None, text="Internal error")
+        )
+        with pytest.raises(UnexpectedGCSResponseError) as e:
+            rest_accessor.get_lock_info(
+                target.GetLockInfoRequest(bucket="b", object_key="k")
+            )
+        assert e.value.status_code == 500
 
 
 @pytest.mark.unittest
 class TestAcquireLock:
-    def test_acquire_lock_success(self, rest_accessor, sample_lock_body):
-        rest_accessor._authed_session._calls.append(
-            DummyResponse(status_code=200, body=sample_lock_body)
+    def test_acquire_lock_success(self, rest_accessor):
+        body = sample_lock_body()
+        rest_accessor._authed_session._calls.append(DummyResponse(200, body))
+        got = rest_accessor.acquire_lock(
+            target.AcquireLockRequest(
+                bucket="b", object_key="k", expires_sec=30, owner="alice", force=False
+            )
         )
-        req = AcquireLockRequest(bucket="b", object_key="o", owner="alice")
-        assert isinstance(rest_accessor.acquire_lock(req), LockResponse)
+        assert got.lock_owner == "alice"
 
     def test_acquire_lock_conflict(self, rest_accessor):
-        rest_accessor._authed_session._calls.append(DummyResponse(status_code=412))
-        req = AcquireLockRequest(bucket="b", object_key="o", owner="alice")
-        with pytest.raises(LockConflictError):
-            rest_accessor.acquire_lock(req)
-
-    def test_acquire_lock_unexpected(self, rest_accessor):
-        rest_accessor._authed_session._calls.append(DummyResponse(status_code=500))
-        req = AcquireLockRequest(bucket="b", object_key="o", owner="alice")
-        with pytest.raises(UnexpectedGCSResponseError):
-            rest_accessor.acquire_lock(req)
-
-    def test_acquire_lock_force_true(self, rest_accessor, sample_lock_body):
         rest_accessor._authed_session._calls.append(
-            DummyResponse(status_code=200, body=sample_lock_body)
+            DummyResponse(412, {"error": {"code": 412}})
         )
-        req = AcquireLockRequest(bucket="b", object_key="o", owner="a", force=True)
-        rest_accessor.acquire_lock(req)
+        with pytest.raises(LockConflictError):
+            rest_accessor.acquire_lock(
+                target.AcquireLockRequest(
+                    bucket="b",
+                    object_key="k",
+                    expires_sec=30,
+                    owner="alice",
+                    force=False,
+                )
+            )
+
+    def test_acquire_lock_4xx(self, rest_accessor):
+        body = {
+            "error": {
+                "code": 403,
+                "message": "Forbidden",
+                "status": "PERMISSION_DENIED",
+            }
+        }
+        rest_accessor._authed_session._calls.append(DummyResponse(403, body))
+        with pytest.raises(GcsClientError) as e:
+            rest_accessor.acquire_lock(
+                target.AcquireLockRequest(
+                    bucket="b",
+                    object_key="k",
+                    expires_sec=30,
+                    owner="alice",
+                    force=False,
+                )
+            )
+        assert e.value.status_code == 403
+
+    def test_acquire_lock_5xx(self, rest_accessor):
+        rest_accessor._authed_session._calls.append(
+            DummyResponse(502, None, text="Bad gateway")
+        )
+        with pytest.raises(UnexpectedGCSResponseError) as e:
+            rest_accessor.acquire_lock(
+                target.AcquireLockRequest(
+                    bucket="b",
+                    object_key="k",
+                    expires_sec=30,
+                    owner="alice",
+                    force=False,
+                )
+            )
+        assert e.value.status_code == 502
+
+    def test_acquire_lock_force_true(self, rest_accessor):
+        body = sample_lock_body()
+        rest_accessor._authed_session._calls.append(DummyResponse(200, body))
+        got = rest_accessor.acquire_lock(
+            target.AcquireLockRequest(
+                bucket="b", object_key="k", expires_sec=30, owner="alice", force=True
+            )
+        )
+        assert got.lock_owner == "alice"
 
 
 @pytest.mark.unittest
 class TestUpdateLock:
-    def test_update_lock_success(self, rest_accessor, sample_lock_body):
-        rest_accessor._authed_session._calls.append(
-            DummyResponse(status_code=200, body=sample_lock_body)
+    def test_update_lock_success(self, rest_accessor):
+        body = sample_lock_body(owner="alice", generation=2, metageneration=2)
+        rest_accessor._authed_session._calls.append(DummyResponse(200, body))
+        got = rest_accessor.update_lock(
+            target.UpdateLockRequest(
+                bucket="b",
+                object_key="k",
+                metageneration=1,
+                expires_sec=30,
+                owner="alice",
+                force=False,
+            )
         )
-        req = UpdateLockRequest(
-            bucket="b", object_key="o", metageneration=1, owner="alice"
-        )
-        assert isinstance(rest_accessor.update_lock(req), LockResponse)
+        assert got.generation == 2
+        assert got.metageneration == 2
 
     def test_update_lock_conflict(self, rest_accessor):
-        rest_accessor._authed_session._calls.append(DummyResponse(status_code=412))
-        req = UpdateLockRequest(
-            bucket="b", object_key="o", metageneration=1, owner="alice"
+        rest_accessor._authed_session._calls.append(
+            DummyResponse(412, {"error": {"code": 412}})
         )
         with pytest.raises(LockConflictError):
-            rest_accessor.update_lock(req)
+            rest_accessor.update_lock(
+                target.UpdateLockRequest(
+                    bucket="b",
+                    object_key="k",
+                    metageneration=1,
+                    expires_sec=30,
+                    owner="alice",
+                    force=False,
+                )
+            )
 
-    def test_update_lock_unexpected(self, rest_accessor):
-        rest_accessor._authed_session._calls.append(DummyResponse(status_code=500))
-        req = UpdateLockRequest(
-            bucket="b", object_key="o", metageneration=1, owner="alice"
-        )
-        with pytest.raises(UnexpectedGCSResponseError):
-            rest_accessor.update_lock(req)
+    def test_update_lock_4xx(self, rest_accessor):
+        body = {"error": {"code": 400, "message": "Bad Request"}}
+        rest_accessor._authed_session._calls.append(DummyResponse(400, body))
+        with pytest.raises(GcsClientError) as e:
+            rest_accessor.update_lock(
+                target.UpdateLockRequest(
+                    bucket="b",
+                    object_key="k",
+                    metageneration=1,
+                    expires_sec=30,
+                    owner="alice",
+                    force=False,
+                )
+            )
+        assert e.value.status_code == 400
 
-    def test_update_lock_force_true(self, rest_accessor, sample_lock_body):
+    def test_update_lock_5xx(self, rest_accessor):
         rest_accessor._authed_session._calls.append(
-            DummyResponse(status_code=200, body=sample_lock_body)
+            DummyResponse(503, None, text="Service unavailable")
         )
-        req = UpdateLockRequest(
-            bucket="b", object_key="o", metageneration=1, owner="a", force=True
+        with pytest.raises(UnexpectedGCSResponseError) as e:
+            rest_accessor.update_lock(
+                target.UpdateLockRequest(
+                    bucket="b",
+                    object_key="k",
+                    metageneration=1,
+                    expires_sec=30,
+                    owner="alice",
+                    force=False,
+                )
+            )
+        assert e.value.status_code == 503
+
+    def test_update_lock_force_true(self, rest_accessor):
+        body = sample_lock_body(owner="alice", generation=3, metageneration=3)
+        rest_accessor._authed_session._calls.append(DummyResponse(200, body))
+        got = rest_accessor.update_lock(
+            target.UpdateLockRequest(
+                bucket="b",
+                object_key="k",
+                metageneration=1,
+                expires_sec=30,
+                owner="alice",
+                force=True,
+            )
         )
-        rest_accessor.update_lock(req)
+        assert got.generation == 3
+        assert got.metageneration == 3
 
 
 @pytest.mark.unittest
 class TestReleaseLock:
     def test_release_lock_success(self, rest_accessor):
-        rest_accessor._authed_session._calls.append(DummyResponse(status_code=204))
-        req = ReleaseLockRequest(
-            bucket="b", object_key="o", generation=1, metageneration=1
+        rest_accessor._authed_session._calls.append(DummyResponse(204, {}))
+        req = target.ReleaseLockRequest(
+            bucket="b", object_key="k", generation=1, metageneration=1
         )
-        assert rest_accessor.release_lock(req) is None
+        rest_accessor.release_lock(req)  # 例外にならないこと
 
     def test_release_lock_warn_404(self, rest_accessor):
-        called = {}
-        rest_accessor._logger.warning = lambda *a, **k: called.setdefault(
-            "warned", True
+        rest_accessor._authed_session._calls.append(
+            DummyResponse(404, {"error": {"code": 404}})
         )
-        rest_accessor._authed_session._calls.append(DummyResponse(status_code=404))
-        req = ReleaseLockRequest(
-            bucket="b", object_key="o", generation=1, metageneration=1
+        req = target.ReleaseLockRequest(
+            bucket="b", object_key="k", generation=1, metageneration=1
         )
-        rest_accessor.release_lock(req)
-        assert called.get("warned")
+        rest_accessor.release_lock(req)  # 例外にならないこと
 
     def test_release_lock_warn_412(self, rest_accessor):
-        called = {}
-        rest_accessor._logger.warning = lambda *a, **k: called.setdefault(
-            "warned", True
+        rest_accessor._authed_session._calls.append(
+            DummyResponse(412, {"error": {"code": 412}})
         )
-        rest_accessor._authed_session._calls.append(DummyResponse(status_code=412))
-        req = ReleaseLockRequest(
-            bucket="b", object_key="o", generation=1, metageneration=1
+        req = target.ReleaseLockRequest(
+            bucket="b", object_key="k", generation=1, metageneration=1
         )
-        rest_accessor.release_lock(req)
-        assert called.get("warned")
+        rest_accessor.release_lock(req)  # 例外にならないこと
 
-    def test_release_lock_unexpected(self, rest_accessor):
-        rest_accessor._authed_session._calls.append(DummyResponse(status_code=500))
-        req = ReleaseLockRequest(
-            bucket="b", object_key="o", generation=1, metageneration=1
+    def test_release_lock_4xx(self, rest_accessor):
+        body = {"error": {"code": 400, "message": "Bad Request"}}
+        rest_accessor._authed_session._calls.append(DummyResponse(400, body))
+        req = target.ReleaseLockRequest(
+            bucket="b", object_key="k", generation=1, metageneration=1
         )
-        with pytest.raises(UnexpectedGCSResponseError):
+        with pytest.raises(GcsClientError) as e:
             rest_accessor.release_lock(req)
+        assert e.value.status_code == 400
+
+    def test_release_lock_5xx(self, rest_accessor):
+        rest_accessor._authed_session._calls.append(
+            DummyResponse(500, None, text="Internal error")
+        )
+        req = target.ReleaseLockRequest(
+            bucket="b", object_key="k", generation=1, metageneration=1
+        )
+        with pytest.raises(UnexpectedGCSResponseError) as e:
+            rest_accessor.release_lock(req)
+        assert e.value.status_code == 500

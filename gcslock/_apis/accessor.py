@@ -2,7 +2,8 @@ import abc
 import json
 import os
 
-from google.auth.credentials import Credentials
+from google.auth import default
+from google.auth.credentials import AnonymousCredentials, Credentials
 from google.auth.transport.requests import AuthorizedSession
 
 from .._logger import get_logger
@@ -150,14 +151,13 @@ class RestAccessor(Accessor):
     the library's domain objects and errors.
     """
 
-    _base_endpoint = "https://storage.googleapis.com"
     _standard_query_parameters = {
         "projection": "noAcl",
         "fields": ",".join(_response_fields()),
         "prettyPrint": "false",
     }
 
-    def __init__(self, credentials: Credentials, logger=None):
+    def __init__(self, credentials: Credentials | None, logger=None):
         """
         Create a RestAccessor bound to given Google auth credentials.
 
@@ -165,16 +165,24 @@ class RestAccessor(Accessor):
             credentials: Google auth credentials used to authorize requests.
             logger: Optional logger; defaults to the library logger.
         """
-        self._authed_session = AuthorizedSession(credentials=credentials)
 
         if logger is None:
             logger = get_logger()
 
         self._logger = logger
 
-        if os.getenv("STORAGE_EMULATOR_HOST", None) is not None:
-            self._base_endpoint = os.getenv("STORAGE_EMULATOR_HOST", None)
+        emulator_host = os.getenv("STORAGE_EMULATOR_HOST", None)
+
+        if emulator_host is not None:
+            self._base_endpoint = emulator_host
             self._logger.warning("Using GCS emulator host: %s", self._base_endpoint)
+            credentials = AnonymousCredentials()
+        else:
+            self._base_endpoint = "https://storage.googleapis.com"
+            if credentials is None:
+                credentials, _ = default()
+
+        self._authed_session = AuthorizedSession(credentials=credentials)
 
     def bucket_exists(self, request: BucketExistsRequest) -> bool:
         """

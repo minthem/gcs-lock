@@ -5,6 +5,7 @@ import pytest
 from gcslock._ttl_dict import TTLDict
 
 
+@pytest.mark.unittest
 class TestTTLDict:
     def test_set_and_get_with_default_ttl(self, monkeypatch):
         now = [100.0]  # リストで可変にしてモック内から更新

@@ -1,0 +1,20 @@
+name: Enforce merge source
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check-merge-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate source branch
+        run: |
+          echo "Validating source branch: ${{ github.head_ref }}"
+          if [[ ! "${{ github.head_ref }}" =~ ^develop\/.* ]]; 
+          then
+            echo "❌ Error: Only branches starting with 'develop/' can be merged into main."
+            exit 1
+          fi
+          echo "✅ Source branch is valid: ${{ github.head_ref }}"

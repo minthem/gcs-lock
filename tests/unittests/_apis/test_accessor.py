@@ -39,6 +39,7 @@ def sample_lock_body():
     }
 
 
+@pytest.mark.unittest
 class TestResponseToLockInfo:
     def test_parses_fields_normal(self, sample_lock_body):
         resp = DummyResponse(body=sample_lock_body)
@@ -55,6 +56,7 @@ class TestResponseToLockInfo:
         assert lr.expires_sec == 0
 
 
+@pytest.mark.unittest
 class TestResponseFields:
     def test_contains_expected_keys(self):
         fields = target._response_fields()
@@ -98,6 +100,7 @@ def rest_accessor(monkeypatch):
     )
 
 
+@pytest.mark.unittest
 class TestBucketExists:
     def test_bucket_exists_true(self, rest_accessor):
         rest_accessor._authed_session._calls.append(
@@ -115,6 +118,7 @@ class TestBucketExists:
             rest_accessor.bucket_exists(BucketExistsRequest(bucket="b"))
 
 
+@pytest.mark.unittest
 class TestGetLockInfo:
     def test_get_lock_info_none(self, rest_accessor):
         rest_accessor._authed_session._calls.append(DummyResponse(status_code=404))
@@ -136,6 +140,7 @@ class TestGetLockInfo:
             rest_accessor.get_lock_info(GetLockInfoRequest(bucket="b", object_key="o"))
 
 
+@pytest.mark.unittest
 class TestAcquireLock:
     def test_acquire_lock_success(self, rest_accessor, sample_lock_body):
         rest_accessor._authed_session._calls.append(
@@ -164,6 +169,7 @@ class TestAcquireLock:
         rest_accessor.acquire_lock(req)
 
 
+@pytest.mark.unittest
 class TestUpdateLock:
     def test_update_lock_success(self, rest_accessor, sample_lock_body):
         rest_accessor._authed_session._calls.append(
@@ -200,6 +206,7 @@ class TestUpdateLock:
         rest_accessor.update_lock(req)
 
 
+@pytest.mark.unittest
 class TestReleaseLock:
     def test_release_lock_success(self, rest_accessor):
         rest_accessor._authed_session._calls.append(DummyResponse(status_code=204))

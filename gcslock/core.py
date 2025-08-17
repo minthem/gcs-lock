@@ -139,9 +139,6 @@ class GcsLock:
         if lock_owner is None:
             lock_owner = str(uuid.uuid4())
 
-        if credentials is None:
-            credentials, _ = default()
-
         self._bucket = bucket_name
         self._locked_owner = lock_owner
         self._accessor: Accessor = RestAccessor(credentials)

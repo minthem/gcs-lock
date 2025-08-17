@@ -1,0 +1,48 @@
+name: Run Tests on PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    if: startsWith(github.base_ref, 'develop') || github.base_ref == 'main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Install the project
+        run: uv sync --all-extras --dev
+
+      - name: Start GCS mock (fake-gcs-server) for main
+        if: ${{ github.base_ref == 'main' }}
+        run: |
+          docker run -d --name fake-gcs -p 4443:4443 fsouza/fake-gcs-server -scheme http -port 4443
+          # 起動待機
+          for i in {1..20}; do
+            if curl -sSf http://localhost:4443/storage/v1/b >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.5
+          done
+          echo "STORAGE_EMULATOR_HOST=http://localhost:4443" >> $GITHUB_ENV
+          echo "GOOGLE_CLOUD_STORAGE_EMULATOR_HOST=http://localhost:4443" >> $GITHUB_ENV
+
+      - name: Run unit tests for develop branches only
+        if: ${{ startsWith(github.base_ref, 'develop') }}
+        run: |
+          uv run pytest -m "unittest" -q
+
+      - name: Run all tests for main
+        if: ${{ github.base_ref == 'main' }}
+        run: |
+          uv run pytest -q

@@ -33,12 +33,6 @@ class TestGcsLock:
         # uuid4 → 固定値
         monkeypatch.setattr("gcslock.core.uuid.uuid4", lambda: self.FIXED_UUID)
 
-        # default credentials → ダミー
-        def fake_credentials():
-            return object(), None
-
-        monkeypatch.setattr("gcslock.core.default", fake_credentials)
-
         # RestAccessor → 単一の MagicMock を返すファクトリ
         accessor = MagicMock()
         accessor.bucket_exists.return_value = True

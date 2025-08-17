@@ -14,33 +14,6 @@ FAKE_GCS_HOST = f"http://localhost:{FAKE_GCS_PORT}"
 STORAGE_EMULATOR_HOST_ENV = "STORAGE_EMULATOR_HOST"
 
 
-class DummyCredentials(Credentials):
-    """
-    ネットワークを使わないダミー認証情報。
-    - token のみを持ち、expiry は None（常に非期限切れ扱い）
-    - refresh は Request を使わずローカル更新のみ
-    - apply で Authorization ヘッダを付与
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.token = "initial-token"
-        self.expiry = None  # 期限なし（valid 判定で refresh されない）
-        self.refresh_called_with = None
-
-    def refresh(self, request):
-        # リフレッシュ要求が来てもネットワークは使わない
-        self.refresh_called_with = request
-        self.token = "refreshed-token"
-        self.expiry = None  # 引き続き期限なし
-
-    def apply(self, headers, token=None):
-        headers["authorization"] = f"Bearer {token or self.token}"
-
-    def with_quota_project(self, quota_project_id):
-        return self
-
-
 def _wait_for_emulator_ready(base_url: str, timeout: float = 10.0) -> None:
     """
     ヘルスチェック: バケット一覧 API に GET を投げて 200 が返るまで待機
@@ -123,22 +96,3 @@ def gcs_emulator() -> Generator[dict, None, None]:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-
-
-@pytest.fixture(autouse=True, scope="session")
-def gcp_auth_patch():
-    """
-    すべてのテストで google.auth.default をダミーに差し替える。
-    session スコープのため、pytest.MonkeyPatch を直接使い最後に undo する。
-    """
-    from gcslock import core as gcs_core
-
-    def fake_default():
-        return DummyCredentials(), "test-project"
-
-    mp = MonkeyPatch()
-    mp.setattr(gcs_core, "default", fake_default)
-    try:
-        yield
-    finally:
-        mp.undo()

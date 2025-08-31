@@ -80,35 +80,31 @@ Without authentication, the library will not be able to access GCS.
 
 
 ### Code Example
+
 ```python
 from gcslock import GcsLock, LockState
 from gcslock.exception import GcsLockError
 from google.oauth2.service_account import Credentials
 
 # Optional: Authenticate with Google Cloud Service Account key JSON file
-#cred = Credentials.from_service_account_file("path/to/service_account.json")
+# cred = Credentials.from_service_account_file("path/to/service_account.json")
 
 BUCKET = "your-bucket-name"
 OBJECT = "locks/my-resource.lock"
 OWNER = "your-owner-id"
 LOCK_EXPIRES_SEC = 60
 
-lock = GcsLock(
-    bucket_name=BUCKET,
-    lock_owner=OWNER
-)
+lock = GcsLock(lock_owner=OWNER)
 
 try:
     with lock.acquire(
-            lock_id=OBJECT,
-            expires_seconds=LOCK_EXPIRES_SEC
+        bucket_name=BUCKET, object_key=OBJECT, expires_seconds=LOCK_EXPIRES_SEC
     ) as lock:
         # Critical section
         ...
 except GcsLockError as e:
-    print(
-        f"Lock error: {e}"
-    )
+    print(f"Lock error: {e}")
+
 ```
 
 ## Use Cases

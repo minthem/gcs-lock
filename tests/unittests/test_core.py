@@ -186,7 +186,7 @@ class TestGcsLock:
     def test_acquire_lock_conflict(self, env):
         bucket = self.BUCKET
         lock_id = self.LOCK_ID
-        expires_sec = 20
+        expires_sec = 1
 
         # 他オーナーが保持中 → 競合
         current_lr = self._lr(
@@ -203,6 +203,82 @@ class TestGcsLock:
         lock_obj = GcsLock(bucket_name=bucket)
         with pytest.raises(LockConflictError):
             lock_obj.acquire(lock_id=lock_id, expires_seconds=expires_sec)
+
+    def test_acquire_lock_conflict_wait(self, env):
+        bucket = self.BUCKET
+        lock_id = self.LOCK_ID
+        expires_sec = 2
+
+        current_lr = self._lr(
+            bucket=bucket,
+            key=lock_id,
+            owner="other-owner",
+            locked_at=datetime.now(timezone.utc),
+            expires_sec=expires_sec,
+            generation=1,
+            metageneration=1,
+        )
+        env.accessor.get_lock_info.return_value = current_lr
+
+        lock_obj = GcsLock(bucket_name=bucket)
+        lock_state = lock_obj.acquire(
+            lock_id=lock_id, expires_seconds=expires_sec, max_wait_seconds=10
+        )
+
+        assert lock_state.bucket == bucket
+        assert lock_state.lock_id == lock_id
+        assert lock_state.lock_owner == str(self.FIXED_UUID)
+        assert lock_state._gcs_lock == lock_obj
+        assert lock_state.lock_state_id == f"{bucket}:{lock_id}"
+
+    def test_acquire_lock_conflict_wait_timeout(self, env):
+        bucket = self.BUCKET
+        lock_id = self.LOCK_ID
+        expires_sec = 10
+
+        current_lr = self._lr(
+            bucket=bucket,
+            key=lock_id,
+            owner="other-owner",
+            locked_at=datetime.now(timezone.utc),
+            expires_sec=expires_sec,
+            generation=1,
+            metageneration=1,
+        )
+        env.accessor.get_lock_info.return_value = current_lr
+
+        lock_obj = GcsLock(bucket_name=bucket)
+        with pytest.raises(LockConflictError):
+            lock_obj.acquire(
+                lock_id=lock_id, expires_seconds=expires_sec, max_wait_seconds=5
+            )
+
+    def test_acquire_lock_conflict_wait_no_lock(self, env):
+        bucket = self.BUCKET
+        lock_id = self.LOCK_ID
+        expires_sec = 1
+
+        current_lr = self._lr(
+            bucket=bucket,
+            key=lock_id,
+            owner="other-owner",
+            locked_at=datetime.now(timezone.utc),
+            expires_sec=expires_sec,
+            generation=1,
+            metageneration=1,
+        )
+        env.accessor.get_lock_info.side_effect = [current_lr, None, None]
+
+        lock_obj = GcsLock(bucket_name=bucket)
+        lock_state = lock_obj.acquire(
+            lock_id=lock_id, expires_seconds=expires_sec, max_wait_seconds=5
+        )
+
+        assert lock_state.bucket == bucket
+        assert lock_state.lock_id == lock_id
+        assert lock_state.lock_owner == str(self.FIXED_UUID)
+        assert lock_state._gcs_lock == lock_obj
+        assert lock_state.lock_state_id == f"{bucket}:{lock_id}"
 
     def test_bucket_exists_not_found(self, env):
         env.accessor.bucket_exists.return_value = False
@@ -273,6 +349,18 @@ class TestGcsLock:
         lock_obj = GcsLock(bucket_name=bucket)
         with pytest.raises(UnexpectedGCSResponseError):
             lock_obj.acquire(lock_id=lock_id, expires_seconds=expires_sec)
+
+    def test_acquire_lock_invalid_expires_sec(self, env):
+        expires_sec = 0
+        lock_obj = GcsLock(bucket_name=self.BUCKET)
+        with pytest.raises(ValueError):
+            lock_obj.acquire(lock_id=self.LOCK_ID, expires_seconds=expires_sec)
+
+    def test_acquire_lock_invalid_wait_seconds(self, env):
+        max_wait_sec = -1
+        lock_obj = GcsLock(bucket_name=self.BUCKET)
+        with pytest.raises(ValueError):
+            lock_obj.acquire(lock_id=self.LOCK_ID, max_wait_seconds=max_wait_sec)
 
     def test_release_raise_not_held_after_local_eviction(self, env):
         expires_sec = 5

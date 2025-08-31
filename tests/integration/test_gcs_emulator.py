@@ -119,3 +119,24 @@ def test_reacquire_same_owner_before_expiry(gcs_emulator):
 
     # 後片付け（最新状態で解放）
     lock.release(state2)
+
+
+@pytest.mark.integration
+def test_lock_conflict_wait(gcs_emulator):
+    """
+    ロック後に別ユーザーがロック取得を行うと、競合で例外が投げられること。
+    """
+    bucket_name = f"it-{uuid.uuid4().hex[:8]}"
+    create_bucket(gcs_emulator["json_api_base"], bucket_name)
+
+    key = "conflict-lock"
+    ttl_seconds = 2
+
+    lock_a = gcslock.core.GcsLock(bucket_name=bucket_name, lock_owner="owner-a")
+    lock_b = gcslock.core.GcsLock(bucket_name=bucket_name, lock_owner="owner-b")
+
+    # A がロックを取得
+    state_a = lock_a.acquire(lock_id=key, expires_seconds=ttl_seconds)
+
+    # B はロック取得出来るまで待機
+    lock_b.acquire(lock_id=key, expires_seconds=ttl_seconds, max_wait_seconds=5)

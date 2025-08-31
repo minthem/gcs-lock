@@ -1,4 +1,3 @@
-import json
 import uuid
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
@@ -98,7 +97,7 @@ class TestGcsLock:
         lock_id = self.LOCK_ID
         expires_sec = 10
 
-        lock_obj = GcsLock(bucket_name=bucket)
+        lock_obj = GcsLock()
         env.accessor.get_lock_info.return_value = None
 
         lr = self._lr(
@@ -110,7 +109,7 @@ class TestGcsLock:
         )
         env.accessor.acquire_lock.return_value = lr
 
-        lock_state = lock_obj.acquire(lock_id=lock_id, expires_seconds=expires_sec)
+        lock_state = lock_obj.acquire(bucket, lock_id, expires_seconds=expires_sec)
 
         assert lock_state.bucket == bucket
         assert lock_state.lock_id == lock_id
@@ -145,8 +144,8 @@ class TestGcsLock:
         )
         env.accessor.update_lock.return_value = new_lr
 
-        lock_obj = GcsLock(bucket_name=bucket)
-        lock_state = lock_obj.acquire(lock_id=lock_id, expires_seconds=expires_sec)
+        lock_obj = GcsLock()
+        lock_state = lock_obj.acquire(bucket, lock_id, expires_seconds=expires_sec)
 
         assert lock_state.bucket == bucket
         assert lock_state.lock_id == lock_id
@@ -170,8 +169,8 @@ class TestGcsLock:
         )
         env.accessor.acquire_lock.return_value = lr
 
-        lock_obj = GcsLock(bucket_name=bucket)
-        lock_state = lock_obj.acquire(lock_id=lock_id, expires_seconds=expires_sec)
+        lock_obj = GcsLock()
+        lock_state = lock_obj.acquire(bucket, lock_id, expires_seconds=expires_sec)
         lock_obj.release(lock_state)
 
         rr = ReleaseLockRequest(
@@ -200,9 +199,9 @@ class TestGcsLock:
         )
         env.accessor.get_lock_info.return_value = current_lr
 
-        lock_obj = GcsLock(bucket_name=bucket)
+        lock_obj = GcsLock()
         with pytest.raises(LockConflictError):
-            lock_obj.acquire(lock_id=lock_id, expires_seconds=expires_sec)
+            lock_obj.acquire(bucket, lock_id, expires_seconds=expires_sec)
 
     def test_acquire_lock_conflict_wait(self, env):
         bucket = self.BUCKET
@@ -220,9 +219,9 @@ class TestGcsLock:
         )
         env.accessor.get_lock_info.return_value = current_lr
 
-        lock_obj = GcsLock(bucket_name=bucket)
+        lock_obj = GcsLock()
         lock_state = lock_obj.acquire(
-            lock_id=lock_id, expires_seconds=expires_sec, max_wait_seconds=10
+            bucket, lock_id, expires_seconds=expires_sec, max_wait_seconds=10
         )
 
         assert lock_state.bucket == bucket
@@ -247,10 +246,10 @@ class TestGcsLock:
         )
         env.accessor.get_lock_info.return_value = current_lr
 
-        lock_obj = GcsLock(bucket_name=bucket)
+        lock_obj = GcsLock()
         with pytest.raises(LockConflictError):
             lock_obj.acquire(
-                lock_id=lock_id, expires_seconds=expires_sec, max_wait_seconds=5
+                bucket, lock_id, expires_seconds=expires_sec, max_wait_seconds=5
             )
 
     def test_acquire_lock_conflict_wait_no_lock(self, env):
@@ -269,9 +268,9 @@ class TestGcsLock:
         )
         env.accessor.get_lock_info.side_effect = [current_lr, None, None]
 
-        lock_obj = GcsLock(bucket_name=bucket)
+        lock_obj = GcsLock()
         lock_state = lock_obj.acquire(
-            lock_id=lock_id, expires_seconds=expires_sec, max_wait_seconds=5
+            bucket, lock_id, expires_seconds=expires_sec, max_wait_seconds=5
         )
 
         assert lock_state.bucket == bucket
@@ -282,31 +281,31 @@ class TestGcsLock:
 
     def test_bucket_exists_not_found(self, env):
         env.accessor.bucket_exists.return_value = False
-        lock_obj = GcsLock(bucket_name=self.BUCKET)
+        lock_obj = GcsLock()
         with pytest.raises(BucketNotFoundError):
-            lock_obj.acquire(lock_id=self.LOCK_ID)
+            lock_obj.acquire(self.BUCKET, self.LOCK_ID)
 
     def test_bucket_exists_raise_error(self, env, error_response_401):
         env.accessor.bucket_exists.side_effect = error_response_401
-        lock_obj = GcsLock(bucket_name=self.BUCKET)
+        lock_obj = GcsLock()
         with pytest.raises(GcsClientError):
-            lock_obj.acquire(lock_id=self.LOCK_ID)
+            lock_obj.acquire(self.BUCKET, self.LOCK_ID)
 
     def test_acquire_lock_new_lock_raise_client_error(self, env, error_response_401):
         env.accessor.get_lock_info.return_value = None
         env.accessor.acquire_lock.side_effect = error_response_401
 
-        lock_obj = GcsLock(bucket_name=self.BUCKET)
+        lock_obj = GcsLock()
         with pytest.raises(GcsClientError):
-            lock_obj.acquire(lock_id=self.LOCK_ID, expires_seconds=10)
+            lock_obj.acquire(self.BUCKET, self.LOCK_ID, expires_seconds=10)
 
     def test_acquire_lock_new_lock_raise_server_error(self, env, error_response_500):
         env.accessor.get_lock_info.return_value = None
         env.accessor.acquire_lock.side_effect = error_response_500
 
-        lock_obj = GcsLock(bucket_name=self.BUCKET)
+        lock_obj = GcsLock()
         with pytest.raises(UnexpectedGCSResponseError):
-            lock_obj.acquire(lock_id=self.LOCK_ID, expires_seconds=10)
+            lock_obj.acquire(self.BUCKET, self.LOCK_ID, expires_seconds=10)
 
     def test_acquire_lock_update_raise_client_error(self, env, error_response_401):
         bucket = self.BUCKET
@@ -325,9 +324,9 @@ class TestGcsLock:
         env.accessor.get_lock_info.return_value = old_lr
         env.accessor.update_lock.side_effect = error_response_401
 
-        lock_obj = GcsLock(bucket_name=bucket)
+        lock_obj = GcsLock()
         with pytest.raises(GcsClientError):
-            lock_obj.acquire(lock_id=lock_id, expires_seconds=expires_sec)
+            lock_obj.acquire(bucket, lock_id, expires_seconds=expires_sec)
 
     def test_acquire_lock_update_raise_error(self, env, error_response_500):
         bucket = self.BUCKET
@@ -346,21 +345,21 @@ class TestGcsLock:
         env.accessor.get_lock_info.return_value = old_lr
         env.accessor.update_lock.side_effect = error_response_500
 
-        lock_obj = GcsLock(bucket_name=bucket)
+        lock_obj = GcsLock()
         with pytest.raises(UnexpectedGCSResponseError):
-            lock_obj.acquire(lock_id=lock_id, expires_seconds=expires_sec)
+            lock_obj.acquire(bucket, lock_id, expires_seconds=expires_sec)
 
     def test_acquire_lock_invalid_expires_sec(self, env):
         expires_sec = 0
-        lock_obj = GcsLock(bucket_name=self.BUCKET)
+        lock_obj = GcsLock()
         with pytest.raises(ValueError):
-            lock_obj.acquire(lock_id=self.LOCK_ID, expires_seconds=expires_sec)
+            lock_obj.acquire(self.BUCKET, self.LOCK_ID, expires_seconds=expires_sec)
 
     def test_acquire_lock_invalid_wait_seconds(self, env):
         max_wait_sec = -1
-        lock_obj = GcsLock(bucket_name=self.BUCKET)
+        lock_obj = GcsLock()
         with pytest.raises(ValueError):
-            lock_obj.acquire(lock_id=self.LOCK_ID, max_wait_seconds=max_wait_sec)
+            lock_obj.acquire(self.BUCKET, self.LOCK_ID, max_wait_seconds=max_wait_sec)
 
     def test_release_raise_not_held_after_local_eviction(self, env):
         expires_sec = 5
@@ -374,8 +373,10 @@ class TestGcsLock:
         )
         env.accessor.acquire_lock.return_value = lr
 
-        lock_obj = GcsLock(bucket_name=self.BUCKET)
-        lock_state = lock_obj.acquire(lock_id=self.LOCK_ID, expires_seconds=expires_sec)
+        lock_obj = GcsLock()
+        lock_state = lock_obj.acquire(
+            self.BUCKET, self.LOCK_ID, expires_seconds=expires_sec
+        )
 
         # 管理テーブルから手動で削除して「このインスタンスで保持していない」状態にする
         del lock_obj._manage_lock_state_table[lock_state.lock_state_id]
@@ -398,8 +399,8 @@ class TestGcsLock:
         )
         env.accessor.acquire_lock.return_value = lr
 
-        lock_obj = GcsLock(bucket_name=self.BUCKET)
-        _ = lock_obj.acquire(lock_id=self.LOCK_ID, expires_seconds=expires_sec)
+        lock_obj = GcsLock()
+        _ = lock_obj.acquire(self.BUCKET, self.LOCK_ID, expires_seconds=expires_sec)
 
         invalid_state = LockState(
             bucket=self.BUCKET,

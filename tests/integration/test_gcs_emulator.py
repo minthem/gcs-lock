@@ -29,12 +29,14 @@ def test_lock_acquire_release_smoke(gcs_emulator):
     bucket_name = f"it-{uuid.uuid4().hex[:8]}"
     create_bucket(gcs_emulator["json_api_base"], bucket_name)
 
-    lock = gcslock.core.GcsLock(bucket_name=bucket_name, lock_owner="it")
+    lock = gcslock.core.GcsLock(lock_owner="it")
 
     key = "sample-lock"
     ttl_seconds = 2
 
-    with lock.acquire(lock_id=key, expires_seconds=ttl_seconds) as lock_state:
+    with lock.acquire(
+        bucket=bucket_name, object_key=key, expires_seconds=ttl_seconds
+    ) as lock_state:
         assert lock_state.bucket == bucket_name
         assert lock_state.lock_id == key
         assert lock_state.lock_owner == "it"
@@ -50,19 +52,21 @@ def test_lock_ttl_expiration(gcs_emulator):
     bucket_name = f"it-{uuid.uuid4().hex[:8]}"
     create_bucket(gcs_emulator["json_api_base"], bucket_name)
 
-    lock_a = gcslock.core.GcsLock(bucket_name=bucket_name, lock_owner="owner-a")
-    lock_b = gcslock.core.GcsLock(bucket_name=bucket_name, lock_owner="owner-b")
+    lock_a = gcslock.core.GcsLock(lock_owner="owner-a")
+    lock_b = gcslock.core.GcsLock(lock_owner="owner-b")
 
     key = "ttl-lock"
     ttl_seconds = 2
 
-    lock_a.acquire(lock_id=key, expires_seconds=ttl_seconds)
+    lock_a.acquire(bucket=bucket_name, object_key=key, expires_seconds=ttl_seconds)
 
     # TTL が切れるまで待つ
     time.sleep(ttl_seconds + 0.01)
 
     # 別オーナーで取得可能に
-    acquired_by_b = lock_b.acquire(lock_id=key, expires_seconds=ttl_seconds)
+    acquired_by_b = lock_b.acquire(
+        bucket=bucket_name, object_key=key, expires_seconds=ttl_seconds
+    )
     lock_b.release(acquired_by_b)
 
 
@@ -77,15 +81,17 @@ def test_lock_conflict_with_other_owner(gcs_emulator):
     key = "conflict-lock"
     ttl_seconds = 5
 
-    lock_a = gcslock.core.GcsLock(bucket_name=bucket_name, lock_owner="owner-a")
-    lock_b = gcslock.core.GcsLock(bucket_name=bucket_name, lock_owner="owner-b")
+    lock_a = gcslock.core.GcsLock(lock_owner="owner-a")
+    lock_b = gcslock.core.GcsLock(lock_owner="owner-b")
 
     # A がロックを取得
-    state_a = lock_a.acquire(lock_id=key, expires_seconds=ttl_seconds)
+    state_a = lock_a.acquire(
+        bucket=bucket_name, object_key=key, expires_seconds=ttl_seconds
+    )
 
     # B はロック取得に失敗（競合）
     with pytest.raises(gcslock.exception.LockConflictError):
-        lock_b.acquire(lock_id=key, expires_seconds=ttl_seconds)
+        lock_b.acquire(bucket=bucket_name, object_key=key, expires_seconds=ttl_seconds)
 
     # 後片付け
     lock_a.release(state_a)
@@ -102,15 +108,19 @@ def test_reacquire_same_owner_before_expiry(gcs_emulator):
     key = "reacquire-lock"
     ttl_seconds = 5
 
-    lock = gcslock.core.GcsLock(bucket_name=bucket_name, lock_owner="same-owner")
+    lock = gcslock.core.GcsLock(lock_owner="same-owner")
 
     # 1 回目の取得
-    state1 = lock.acquire(lock_id=key, expires_seconds=ttl_seconds)
+    state1 = lock.acquire(
+        bucket=bucket_name, object_key=key, expires_seconds=ttl_seconds
+    )
     assert state1.lock_owner == "same-owner"
 
     # 少し待ってから（期限前）再取得（更新）
     time.sleep(0.1)
-    state2 = lock.acquire(lock_id=key, expires_seconds=ttl_seconds)
+    state2 = lock.acquire(
+        bucket=bucket_name, object_key=key, expires_seconds=ttl_seconds
+    )
 
     # 同一キー・同一オーナーで取得でき、期限が延長されている（同等以上）
     assert state2.lock_id == key
@@ -132,11 +142,18 @@ def test_lock_conflict_wait(gcs_emulator):
     key = "conflict-lock"
     ttl_seconds = 2
 
-    lock_a = gcslock.core.GcsLock(bucket_name=bucket_name, lock_owner="owner-a")
-    lock_b = gcslock.core.GcsLock(bucket_name=bucket_name, lock_owner="owner-b")
+    lock_a = gcslock.core.GcsLock(lock_owner="owner-a")
+    lock_b = gcslock.core.GcsLock(lock_owner="owner-b")
 
     # A がロックを取得
-    state_a = lock_a.acquire(lock_id=key, expires_seconds=ttl_seconds)
+    state_a = lock_a.acquire(
+        bucket=bucket_name, object_key=key, expires_seconds=ttl_seconds
+    )
 
     # B はロック取得出来るまで待機
-    lock_b.acquire(lock_id=key, expires_seconds=ttl_seconds, max_wait_seconds=5)
+    lock_b.acquire(
+        bucket=bucket_name,
+        object_key=key,
+        expires_seconds=ttl_seconds,
+        max_wait_seconds=5,
+    )

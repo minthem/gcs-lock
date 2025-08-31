@@ -114,11 +114,10 @@ class GcsLock:
     and conditional requests to avoid conflicts between owners.
     """
 
-    __slots__ = ("_bucket", "_locked_owner", "_accessor", "_manage_lock_state_table")
+    __slots__ = ("_locked_owner", "_accessor", "_manage_lock_state_table")
 
     def __init__(
         self,
-        bucket_name: str,
         lock_owner: str | None = None,
         credentials: Credentials | None = None,
     ):
@@ -126,7 +125,6 @@ class GcsLock:
         Initialize a GcsLock client.
 
         Args:
-            bucket_name: Target GCS bucket where lock objects are stored.
             lock_owner: Optional owner identifier. If not provided, a random UUID
                 is generated to represent this client instance.
             credentials: Optional Google auth credentials. If not provided,
@@ -139,13 +137,17 @@ class GcsLock:
         if lock_owner is None:
             lock_owner = str(uuid.uuid4())
 
-        self._bucket = bucket_name
         self._locked_owner = lock_owner
         self._accessor: Accessor = RestAccessor(credentials)
         self._manage_lock_state_table: TTLDict[str, LockResponse] = TTLDict()
 
     def acquire(
-        self, lock_id: str, expires_seconds: int = 30, *, max_wait_seconds: int = 0
+        self,
+        bucket: str,
+        object_key: str,
+        expires_seconds: int = 30,
+        *,
+        max_wait_seconds: int = 0,
     ) -> LockState:
         """
         Acquire or refresh a lock for the given object key.
@@ -155,7 +157,8 @@ class GcsLock:
         In case of a conflict (owned by another active owner), an error is raised.
 
         Args:
-            lock_id: The object key identifying the lock in the bucket.
+            bucket: The name of the bucket where the lock object resides.
+            object_key: The object key identifying the lock.
             expires_seconds: Time-to-live (in seconds) for the lock from now.
             max_wait_seconds: Maximum time to wait for the lock to become available.
 
@@ -176,17 +179,19 @@ class GcsLock:
         if expires_seconds < 1:
             raise ValueError("expires_seconds must be a positive integer")
 
-        self._ensure_bucket_exists()
+        self._ensure_bucket_exists(bucket)
         wait_threshold = datetime.now(timezone.utc) + timedelta(
             seconds=max_wait_seconds
         )
 
         while True:
             try:
-                response = self._resolve_lock_response(lock_id, expires_seconds)
+                response = self._resolve_lock_response(
+                    bucket, object_key, expires_seconds
+                )
                 break
             except LockConflictError:
-                release_time = self._get_release_time(self._bucket, lock_id)
+                release_time = self._get_release_time(bucket, object_key)
                 if wait_threshold <= release_time:
                     raise
 
@@ -195,14 +200,14 @@ class GcsLock:
                     min(release_time, wait_threshold) - current_time
                 ).total_seconds()
                 get_logger().debug(
-                    f"Lock {lock_id} is currently held by another owner. "
+                    f"Lock gs://{bucket}/{object_key} is currently held by another owner. "
                     f"Waiting for {wait_seconds} seconds before retrying..."
                 )
                 sleep(wait_seconds if 0 < wait_seconds else 0)
 
         lock_state = LockState(
-            bucket=self._bucket,
-            lock_id=lock_id,
+            bucket=bucket,
+            lock_id=object_key,
             lock_owner=self._locked_owner,
             expires_at=response.expires_at,
             _gcs_lock=self,
@@ -237,7 +242,7 @@ class GcsLock:
             raise LockNotHeldError(lock_state.lock_state_id)
 
         release_request = ReleaseLockRequest(
-            bucket=self._bucket,
+            bucket=lock_state.bucket,
             object_key=lock_state.lock_id,
             generation=lock_instance.generation,
             metageneration=lock_instance.metageneration,
@@ -247,7 +252,7 @@ class GcsLock:
 
         del self._manage_lock_state_table[internal_id]
 
-    def _ensure_bucket_exists(self):
+    def _ensure_bucket_exists(self, bucket):
         """
         Verify that the target bucket exists.
 
@@ -255,12 +260,12 @@ class GcsLock:
             BucketNotFoundError: If the bucket does not exist or is inaccessible.
             GCSApiError: On underlying GCS API failures when checking existence.
         """
-        bucket_exists = BucketExistsRequest(bucket=self._bucket)
+        bucket_exists = BucketExistsRequest(bucket)
         if not self._accessor.bucket_exists(bucket_exists):
-            raise BucketNotFoundError(self._bucket)
+            raise BucketNotFoundError(bucket)
 
     def _resolve_lock_response(
-        self, lock_id: str, expires_seconds: int
+        self, bucket: str, object_key: str, expires_seconds: int
     ) -> LockResponse:
         """
         Create or update the lock on GCS and return the current lock response.
@@ -269,7 +274,8 @@ class GcsLock:
         by this owner, it is updated (refreshed). Otherwise a conflict is raised.
 
         Args:
-            lock_id: The object key identifying the lock.
+            bucket: The name of the bucket where the lock object resides.
+            object_key: The object key identifying the lock.
             expires_seconds: Desired TTL for the lock from now.
 
         Returns:
@@ -280,28 +286,28 @@ class GcsLock:
                 and cannot be updated by this client.
             GCSApiError: On underlying GCS API failures.
         """
-        info_req = GetLockInfoRequest(bucket=self._bucket, object_key=lock_id)
+        info_req = GetLockInfoRequest(bucket=bucket, object_key=object_key)
         lock_info = self._accessor.get_lock_info(info_req)
 
         if lock_info is None:  # first time acquiring lock
             req = AcquireLockRequest(
-                bucket=self._bucket,
-                object_key=lock_id,
+                bucket=bucket,
+                object_key=object_key,
                 expires_sec=expires_seconds,
                 owner=self._locked_owner,
             )
             return self._accessor.acquire_lock(req)
         elif lock_info.can_be_acquire_by(self._locked_owner):
             req = UpdateLockRequest(
-                bucket=self._bucket,
-                object_key=lock_id,
+                bucket=bucket,
+                object_key=object_key,
                 metageneration=lock_info.metageneration,
                 expires_sec=expires_seconds,
                 owner=self._locked_owner,
             )
             return self._accessor.update_lock(req)
         else:
-            raise LockConflictError(self._bucket, lock_id)
+            raise LockConflictError(bucket, object_key)
 
     def _get_release_time(self, bucket: str, object_key: str) -> datetime:
         """
@@ -319,7 +325,7 @@ class GcsLock:
         Returns:
             The lock release/expiration time of the specified object.
         """
-        info_req = GetLockInfoRequest(bucket=self._bucket, object_key=object_key)
+        info_req = GetLockInfoRequest(bucket=bucket, object_key=object_key)
         lock_info = self._accessor.get_lock_info(info_req)
 
         if lock_info is None:

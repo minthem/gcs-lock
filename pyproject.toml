@@ -9,8 +9,8 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "google-auth>=2.40.3",
-    "requests>=2.32.4",
+    "google-auth>=2",
+    "requests>=2",
 ]
 
 [build-system]
@@ -44,7 +44,9 @@ markers = [
     "unittest: marks unit tests",
 ]
 
-
 [tool.isort]
 profile = 'black'
 multi_line_output = 3
+
+[project.scripts]
+gcslock = "gcslock._cli:main"

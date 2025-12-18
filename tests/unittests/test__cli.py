@@ -200,7 +200,7 @@ class TestMain:
         lock_instance.acquire.assert_called_once_with(
             "bkt", "obj", 30, max_wait_seconds=5
         )
-        mock_process.run.assert_called_once_with(["echo", "hello"])
+        mock_process.run.assert_called_once_with(["echo", "hello"], check=True)
 
     def test_main_error_exit_when_acquire_fails(self, mock_gcs, capsys):
         lock_instance = mock_gcs.return_value

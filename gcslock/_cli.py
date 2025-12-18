@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None):
                 cli_args.expires_sec,
                 max_wait_seconds=cli_args.wait_sec,
             ):
-                subprocess.run(cli_args.command)
+                subprocess.run(cli_args.command, check=True)
 
         except Exception as e:
             print(e, file=sys.stderr)

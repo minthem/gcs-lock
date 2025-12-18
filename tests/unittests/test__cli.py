@@ -1,4 +1,5 @@
-from unittest.mock import MagicMock, patch
+from subprocess import CalledProcessError
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -226,3 +227,21 @@ class TestMain:
         lock_instance.acquire.assert_called_once_with(
             "bkt", "obj", 20, max_wait_seconds=0
         )
+
+    def test_main_error_exit_when_command_fails(self, mock_gcs, mock_process, capsys):
+        lock_instance = mock_gcs.return_value
+        ctx = MagicMock()
+        ctx.__enter__.return_value = None
+        lock_instance.acquire.return_value = ctx
+        mock_process.run.side_effect = CalledProcessError(
+            returncode=1,
+            cmd="fail command",
+            output=b"Command 'exit 1' returned non-zero exit status 1",
+        )
+
+        with pytest.raises(SystemExit) as e:
+            _cli.main(["--bucket", "bkt", "--object-key", "obj", "fail", "command"])
+
+        assert e.value.code == 1
+        err = capsys.readouterr().err
+        assert "Command 'fail command'" in err
